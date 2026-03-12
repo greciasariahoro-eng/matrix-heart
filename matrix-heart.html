@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Matrix Heart</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#000; overflow:hidden; width:100vw; height:100vh; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+canvas.width  = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const FS    = 14;
+const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@#$%^&*!?<>[]{}';
+const rndChar = () => CHARS[Math.floor(Math.random()*CHARS.length)];
+
+/* ═══════════════════════════════════════════════════════════
+   HEART SHAPE via offscreen canvas
+   1. Draw a FILLED heart using the classic parametric formula
+      x = 16sin³t   y = 13cost - 5cos2t - 2cos3t - cos4t
+   2. Stroke the same path with thick line = border ring
+   3. Sample each grid cell by reading pixel colour
+═══════════════════════════════════════════════════════════ */
+const off    = document.createElement('canvas');
+const offCtx = off.getContext('2d', { willReadFrequently: true });
+
+function drawHeart(oc, cx, cy, scale) {
+  oc.beginPath();
+  for (let t = 0; t <= Math.PI * 2; t += 0.01) {
+    const hx = cx + scale * 16 * Math.pow(Math.sin(t), 3);
+    const hy = cy - scale * (13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t));
+    t === 0 ? oc.moveTo(hx, hy) : oc.lineTo(hx, hy);
+  }
+  oc.closePath();
+}
+
+function buildHeartCells(cx, cy, scale) {
+  const W = canvas.width, H = canvas.height;
+  off.width  = W;
+  off.height = H;
+  offCtx.clearRect(0, 0, W, H);
+
+  // 1. Fill entire heart solid white
+  drawHeart(offCtx, cx, cy, scale);
+  offCtx.fillStyle = '#ffffff';
+  offCtx.fill();
+
+  // 2. Stroke border in red (thicker = wider border ring of chars)
+  drawHeart(offCtx, cx, cy, scale);
+  offCtx.strokeStyle = '#ff0000';
+  offCtx.lineWidth   = FS * 1.6;
+  offCtx.stroke();
+
+  const img    = offCtx.getImageData(0, 0, W, H).data;
+  const border = [], inner = [];
+  const cols   = Math.floor(W / FS);
+  const rows   = Math.floor(H / FS);
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      // sample centre of cell
+      const px = col * FS + 7;
+      const py = row * FS + 7;
+      const i  = (py * W + px) * 4;
+      const r  = img[i], g = img[i+1], b = img[i+2], a = img[i+3];
+      if (a < 10) continue;
+      const cell = { x: col*FS, y: row*FS + FS };
+      if (r > 200 && g < 50) border.push(cell);   // red = border
+      else                    inner.push(cell);    // white = fill
+    }
+  }
+  return { border, inner };
+}
+
+/* ─── RAIN ──────────────────────────────────────────────── */
+let drops = [];
+function initDrops() {
+  drops = [];
+  const cols = Math.floor(canvas.width / FS);
+  for (let i = 0; i < cols; i++) {
+    drops.push({
+      x    : i * FS,
+      y    : Math.random() * -canvas.height,
+      speed: 3.5 + Math.random() * 4.5,
+      trail: Array.from({length:32}, rndChar)
+    });
+  }
+}
+
+/* ─── STATE ─────────────────────────────────────────────── */
+let heartScale = 0, maxScale, cx, cy;
+let borderCells = [], innerCells = [];
+let borderSet = new Set(), innerSet = new Set();
+let cellChars = new Map();
+let frame = 0;
+
+function reset() {
+  maxScale  = Math.min(canvas.width, canvas.height) * 0.0185;
+  cx        = canvas.width  / 2;
+  cy        = canvas.height / 2 + 10;
+  heartScale = 0;
+  borderCells = []; innerCells = [];
+  borderSet.clear(); innerSet.clear();
+  cellChars.clear();
+  initDrops();
+}
+reset();
+
+/* ─── MAIN LOOP ─────────────────────────────────────────── */
+function draw() {
+  frame++;
+  ctx.fillStyle = 'rgba(0,0,0,0.07)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = `bold ${FS}px "Courier New", monospace`;
+
+  /* grow */
+  if (heartScale < maxScale) {
+    heartScale = Math.min(maxScale, heartScale + maxScale / 120);
+    const map  = buildHeartCells(cx, cy, heartScale);
+    borderCells = map.border;
+    innerCells  = map.inner;
+    borderSet   = new Set(borderCells.map(c=>`${c.x},${c.y}`));
+    innerSet    = new Set(innerCells.map(c=>`${c.x},${c.y}`));
+  }
+
+  /* RAIN */
+  for (const d of drops) {
+    d.y += d.speed;
+    if (d.y > canvas.height + 200) { d.y = -100; d.speed = 3.5 + Math.random()*4.5; }
+    if (Math.random() < 0.15) d.trail[Math.floor(Math.random()*d.trail.length)] = rndChar();
+
+    for (let j = 0; j < d.trail.length; j++) {
+      const cy2 = Math.round((d.y - j*FS)/FS)*FS + FS;
+      if (cy2 < 0 || cy2 > canvas.height) continue;
+      const key = `${d.x},${cy2}`;
+      const t   = 1 - j / d.trail.length;
+      if (borderSet.has(key)) continue;
+      ctx.shadowBlur = 0;
+      if (innerSet.has(key)) {
+        ctx.fillStyle = `rgba(${j===0?'255,80,160':'180,10,80'},${t*(j===0?0.85:0.4)})`;
+      } else {
+        ctx.fillStyle = j===0
+          ? `rgba(255,225,240,${t})`
+          : j<3 ? `rgba(255,50,150,${t})` : `rgba(135,0,58,${t*0.88})`;
+      }
+      ctx.fillText(d.trail[j], d.x, cy2);
+    }
+  }
+
+  /* INNER FILL */
+  for (const cell of innerCells) {
+    const key = `${cell.x},${cell.y}`;
+    if (!cellChars.has(key) || frame%9===0) cellChars.set(key, rndChar());
+    const dx=(cell.x-cx)/canvas.width, dy=(cell.y-cy)/canvas.height;
+    ctx.shadowBlur=0;
+    ctx.fillStyle=`rgba(200,0,100,${0.15+Math.sqrt(dx*dx+dy*dy)*3})`;
+    ctx.fillText(cellChars.get(key), cell.x, cell.y);
+  }
+
+  /* BORDER GLOW */
+  ctx.shadowColor='#ff0099';
+  for (const cell of borderCells) {
+    const key=`${cell.x},${cell.y}`;
+    if (!cellChars.has(key)||frame%5===0) cellChars.set(key, rndChar());
+    ctx.shadowBlur=18; ctx.fillStyle='rgba(255,15,155,1)';
+    ctx.fillText(cellChars.get(key), cell.x, cell.y);
+    ctx.shadowBlur=32; ctx.fillStyle='rgba(255,120,220,0.45)';
+    ctx.fillText(cellChars.get(key), cell.x, cell.y);
+  }
+
+  ctx.shadowBlur=0;
+  requestAnimationFrame(draw);
+}
+
+window.addEventListener('resize', ()=>{ canvas.width=window.innerWidth; canvas.height=window.innerHeight; reset(); });
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
